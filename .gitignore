@@ -1,0 +1,33 @@
+# Python virtual environment
+.venv/
+venv/
+
+# Python caches / build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Outputs
+out/
+output/
+*.tmp
+
+# QGIS working folder
+qgis/
+
+# Large data files (photos, rasters, PPK binaries)
+*.JPG
+*.jpg
+*.tif
+*.tiff
+*.bin
+*.obs
+*.nav
+*.MRK
+
+# OS
+.DS_Store
+Thumbs.db
