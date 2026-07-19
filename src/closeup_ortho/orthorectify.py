@@ -145,45 +145,22 @@ def _write_geotiff(meta: PhotoMeta, x0: float, y0: float, gsd_m: float, crs, out
         dst.write(bands)
 
 
-def orthorectify_folder(
+def project_folder(
     photo_dir,
     dsm_path,
-    out_gpkg,
     lenses=None,
     write_geotiffs: bool = False,
     geotiff_dir=None,
     buffer_radius_m: float | None = None,
     recursive: bool = True,
-) -> gpd.GeoDataFrame:
-    """Planar-project close-up photos in ``photo_dir`` onto ``dsm_path``.
+):
+    """Project one folder of photos onto one DSM, without writing a GeoPackage.
 
-    Parameters
-    ----------
-    photo_dir : path
-        Folder of DJI close-up JPEGs (searched recursively by default).
-    dsm_path : path
-        DSM raster (any rasterio-readable format). Its CRS is used for all output.
-    out_gpkg : path
-        Output GeoPackage; footprints are written to a ``footprints`` layer.
-    lenses : set[str] | None
-        Which lenses to process, a subset of ``{"tele", "wide"}``. Defaults to
-        ``{"tele"}``.
-    write_geotiffs : bool
-        If true, also write each projected photo as a GeoTIFF.
-    geotiff_dir : path | None
-        Destination for GeoTIFFs (required when ``write_geotiffs`` is true).
-    buffer_radius_m : float | None
-        Override the auto-computed DSM sampling buffer radius (meters).
-    recursive : bool
-        Recurse into subfolders when scanning for photos.
-
-    Returns
-    -------
-    geopandas.GeoDataFrame
-        The footprints written, in the DSM CRS.
+    Same parameters as :func:`orthorectify_folder` (minus ``out_gpkg``). Returns a tuple
+    ``(records, crs)`` where ``records`` is a list of footprint dicts (possibly empty)
+    and ``crs`` is the DSM CRS.
     """
     photo_dir = Path(photo_dir)
-    out_gpkg = Path(out_gpkg)
     lenses = set(lenses) if lenses else {"tele"}
     bad = lenses - VALID_LENSES
     if bad:
@@ -226,6 +203,59 @@ def orthorectify_folder(
 
         crs = dsm.crs
 
+    log.info("%s: %d processed, %d skipped (%d candidate photos)",
+             photo_dir, n_processed, n_skipped, n_seen)
+    return records, crs
+
+
+def orthorectify_folder(
+    photo_dir,
+    dsm_path,
+    out_gpkg,
+    lenses=None,
+    write_geotiffs: bool = False,
+    geotiff_dir=None,
+    buffer_radius_m: float | None = None,
+    recursive: bool = True,
+) -> gpd.GeoDataFrame:
+    """Planar-project close-up photos in ``photo_dir`` onto ``dsm_path``.
+
+    Parameters
+    ----------
+    photo_dir : path
+        Folder of DJI close-up JPEGs (searched recursively by default).
+    dsm_path : path
+        DSM raster (any rasterio-readable format). Its CRS is used for all output.
+    out_gpkg : path
+        Output GeoPackage; footprints are written to a ``footprints`` layer.
+    lenses : set[str] | None
+        Which lenses to process, a subset of ``{"tele", "wide"}``. Defaults to
+        ``{"tele"}``.
+    write_geotiffs : bool
+        If true, also write each projected photo as a GeoTIFF.
+    geotiff_dir : path | None
+        Destination for GeoTIFFs (required when ``write_geotiffs`` is true).
+    buffer_radius_m : float | None
+        Override the auto-computed DSM sampling buffer radius (meters).
+    recursive : bool
+        Recurse into subfolders when scanning for photos.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        The footprints written, in the DSM CRS.
+    """
+    out_gpkg = Path(out_gpkg)
+    records, crs = project_folder(
+        photo_dir,
+        dsm_path,
+        lenses=lenses,
+        write_geotiffs=write_geotiffs,
+        geotiff_dir=geotiff_dir,
+        buffer_radius_m=buffer_radius_m,
+        recursive=recursive,
+    )
+
     if not records:
         raise RuntimeError("No photos were successfully projected; check lens filter and DSM coverage.")
 
@@ -233,6 +263,5 @@ def orthorectify_folder(
     out_gpkg.parent.mkdir(parents=True, exist_ok=True)
     gdf.to_file(out_gpkg, layer="footprints", driver="GPKG")
 
-    log.info("Done: %d processed, %d skipped (%d candidate photos). Footprints -> %s",
-             n_processed, n_skipped, n_seen, out_gpkg)
+    log.info("Done: %d footprints -> %s", len(gdf), out_gpkg)
     return gdf
