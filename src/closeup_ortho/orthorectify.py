@@ -4,11 +4,16 @@ This implements a deliberately simple *planar* projection (not full orthorectifi
 each nadir photo is placed on the ground as a rectangle whose size comes from the
 camera-to-ground distance (absolute ellipsoidal altitude minus the max DSM elevation in a
 small buffer below the camera) and whose heading comes from the gimbal yaw.
+
+Positions come from the wide frames only: tele/med frames store the *planned* waypoint
+coordinates rather than the drone's actual RTK fix, so their footprints are centred on
+the paired wide frame's position (see :func:`_wide_sibling`).
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import geopandas as gpd
@@ -18,11 +23,11 @@ from PIL import Image
 
 from closeup_ortho.dsm import DSM
 from closeup_ortho.geometry import compute_footprint, footprint_polygon, geotiff_affine
-from closeup_ortho.metadata import PhotoMeta, camera_of, read_photo_meta
+from closeup_ortho.metadata import PhotoMeta, camera_of, read_photo_meta, read_position
 
 log = logging.getLogger("closeup_ortho")
 
-VALID_LENSES = {"tele", "wide"}
+VALID_LENSES = {"tele", "wide", "med"}
 
 # Nadir tolerance (degrees of gimbal pitch/roll deviation from straight-down).
 _NADIR_WARN_DEG = 0.5
@@ -32,12 +37,79 @@ _NADIR_SKIP_DEG = 3.0
 _BUFFER_TARGET_DIAM_M = 0.625
 _BUFFER_MAX_DIAM_M = 1.0
 
+# Max tele-vs-wide AbsoluteAltitude disagreement (m) before the wide altitude is
+# rejected. The frames of one capture normally agree within ~0.2 m, but some wide
+# frames carry an AbsoluteAltitude that is off by ~18 m (non-ellipsoidal reference)
+# even with a fixed RTK flag.
+_WIDE_ALT_TOL_M = 2.0
+
 
 def _iter_photos(photo_dir: Path, recursive: bool):
     pattern = "**/*" if recursive else "*"
     for p in sorted(photo_dir.glob(pattern)):
         if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg"):
             yield p
+
+
+# Filename suffixes of the non-wide frames ("zoom" is the 2024 spelling of tele).
+_TELE_SUFFIXES = ("tele", "zoom", "med")
+
+
+def _wide_files(folder: Path) -> list[tuple[Path, str]]:
+    """List the wide frames of a folder as ``(path, stem-without-'wide')`` pairs.
+
+    Missions from 2024 name the wide frame with no lens suffix at all
+    (``..._V_1507.JPG`` next to ``..._V_1507zoom.JPG``): when a folder has no
+    ``*wide`` file, every JPEG without a tele-side suffix is a wide candidate.
+    """
+    jpgs = [
+        p for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg")
+    ]
+    wides = [(p, p.stem[:-4].lower()) for p in jpgs if p.stem.lower().endswith("wide")]
+    if wides:
+        return wides
+    return [
+        (p, p.stem.lower()) for p in jpgs
+        if not p.stem.lower().endswith(_TELE_SUFFIXES)
+    ]
+
+
+def _wide_sibling(path: Path, wide_index: dict[Path, list[tuple[Path, str]]]) -> Path | None:
+    """Find the wide frame of the same waypoint capture, in the same folder.
+
+    DJI names pair frames as ``DJI_<time>_<seq>_V_<label>tele.JPG`` /
+    ``DJI_<time+2s>_<seq+1>_V_<label>wide.JPG``: time and sequence differ, but the
+    waypoint ``<label>`` is shared. Match on the ``_<label>`` stem tail; if a waypoint
+    was visited more than once, pick the candidate with the nearest sequence number.
+    ``wide_index`` caches the wide files of each scanned folder.
+    """
+    stem = path.stem.lower()
+    for suffix in _TELE_SUFFIXES:
+        if stem.endswith(suffix):
+            base = stem[: -len(suffix)]
+            break
+    else:
+        return None
+    label = base.rsplit("_", 1)[-1]
+    if not label:
+        return None
+
+    folder = path.parent
+    if folder not in wide_index:
+        wide_index[folder] = _wide_files(folder)
+    tail = f"_{label}"
+    candidates = [p for p, key in wide_index[folder] if key.endswith(tail)]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def seq_of(p: Path) -> int:
+        parts = p.stem.split("_")
+        return int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+
+    return min(candidates, key=lambda p: abs(seq_of(p) - seq_of(path)))
 
 
 def _auto_buffer_radius(footprint_w_m: float, footprint_h_m: float) -> float:
@@ -171,6 +243,7 @@ def project_folder(
 
     n_seen = n_processed = n_skipped = 0
     records: list[dict] = []
+    wide_index: dict[Path, list[tuple[Path, str]]] = {}
 
     with DSM(dsm_path) as dsm:
         log.info("DSM CRS: %s | resolution: %.4f m", dsm.crs, dsm.res_x)
@@ -189,11 +262,43 @@ def project_folder(
             if meta.camera not in lenses:
                 continue
 
+            # Tele/med frames record the *planned* waypoint position, not the drone's
+            # actual RTK fix; only the wide frame carries the RTK position. Borrow
+            # lat/lon/altitude from the paired wide frame, but keep the photo's own
+            # gimbal angles (the wide gimbal values can be a 180-degree-flipped
+            # representation of the same orientation).
+            position_source, position_from = "self", None
+            if meta.camera != "wide":
+                sibling = _wide_sibling(path, wide_index)
+                position = read_position(sibling) if sibling else None
+                if position is not None:
+                    wide_lat, wide_lon, wide_alt = position
+                    if abs(wide_alt - meta.abs_alt_m) <= _WIDE_ALT_TOL_M:
+                        meta = replace(
+                            meta, latitude=wide_lat, longitude=wide_lon, abs_alt_m=wide_alt
+                        )
+                        position_source, position_from = "wide", sibling.name
+                    else:
+                        # A wide altitude that far off means the whole wide nav record
+                        # is corrupt (lat/lon seen ~8 m off too): keep the photo's own.
+                        log.warning(
+                            "%s: wide frame %s has implausible altitude (%.2f vs own "
+                            "%.2f); wide record looks corrupt, using the photo's own "
+                            "coordinates", path.name, sibling.name, wide_alt, meta.abs_alt_m,
+                        )
+                else:
+                    log.warning(
+                        "%s: no wide sibling found; using the photo's own "
+                        "(waypoint-plan) coordinates", path.name,
+                    )
+
             result = _project_one(meta, dsm, buffer_radius_m)
             if result is None:
                 n_skipped += 1
                 continue
 
+            result["record"]["position_source"] = position_source
+            result["record"]["position_from"] = position_from
             records.append(result["record"])
             n_processed += 1
 

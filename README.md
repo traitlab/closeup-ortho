@@ -12,7 +12,7 @@
 
 `closeup-ortho` performs a **simple planar projection** of DJI nadir close-up photos onto a DSM. Each photo is placed on the ground as a rectangle whose:
 
-- 📍 **position** comes from the photo's RTK GPS (WGS84 lat/lon)
+- 📍 **position** comes from the RTK GPS of the **wide** frame (WGS84 lat/lon). Tele/med frames store the *planned* waypoint coordinates instead of the actual RTK fix, so their footprints borrow the position (and altitude) of the wide frame taken at the same waypoint; the photo's own gimbal angles are kept.
 - 🧭 **heading** comes from the gimbal yaw
 - 📐 **size** comes from the camera-to-ground distance — `AbsoluteAltitude − max(DSM elevation in a small buffer)` — combined with the lens geometry (calibrated focal length for the wide camera, `FocalLengthIn35mmFilm` for the tele camera)
 
@@ -158,9 +158,11 @@ The output layer contains one polygon per bounding box. Join it back to footprin
 | `path` | Full path to the photo |
 | `filename` | Filename with extension |
 | `directory` | Parent directory of the photo |
-| `camera` | `tele` or `wide` |
-| `longitude`, `latitude` | Camera position, WGS84 |
-| `abs_alt_m` | AbsoluteAltitude (ellipsoidal), meters |
+| `camera` | `tele`, `wide` or `med` (`med` = middle camera of the DJI M4E) |
+| `longitude`, `latitude` | Camera position, WGS84 (from the paired wide frame for tele/med) |
+| `abs_alt_m` | AbsoluteAltitude (ellipsoidal), meters (from the paired wide frame for tele/med) |
+| `position_source` | `wide` (borrowed from the paired wide frame) or `self` (photo's own tags — no wide sibling found, or the wide nav record was implausible) |
+| `position_from` | Filename of the wide frame the position came from (empty for wide photos) |
 | `dist_m` | Camera-to-ground distance used for projection, meters |
 | `gsd_m` | Ground sample distance, meters/pixel |
 | `footprint_w_m`, `footprint_h_m` | Footprint dimensions on the ground, meters |

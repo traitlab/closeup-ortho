@@ -19,7 +19,7 @@ from closeup_ortho.orthorectify import orthorectify_folder
 def _parse_lenses(value: str) -> set[str]:
     value = value.lower()
     if value == "all":
-        return {"tele", "wide"}
+        return {"tele", "wide", "med"}
     return {part.strip() for part in value.split(",") if part.strip()}
 
 
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         "--lenses",
         type=_parse_lenses,
         default={"tele"},
-        help="Lenses to process: 'tele' (default), 'wide', 'tele,wide', or 'all'.",
+        help="Lenses to process: 'tele' (default), 'wide', 'med', comma-combos like 'tele,wide', or 'all'.",
     )
     p_ortho.add_argument("--geotiffs", default=None, help="Also write GeoTIFFs to this folder.")
     p_ortho.add_argument(
@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         "--lenses",
         type=_parse_lenses,
         default={"tele"},
-        help="Lenses to process: 'tele' (default), 'wide', 'tele,wide', or 'all'.",
+        help="Lenses to process: 'tele' (default), 'wide', 'med', comma-combos like 'tele,wide', or 'all'.",
     )
     p_batch.add_argument(
         "--geotiffs", default=None,
