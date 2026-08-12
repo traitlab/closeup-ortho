@@ -29,7 +29,7 @@ class PhotoMeta:
     """Metadata for one close-up photo, in the units used downstream."""
 
     path: Path
-    camera: str  # "tele" or "wide"
+    camera: str  # "tele", "wide" or "med"
     latitude: float  # WGS84 decimal degrees
     longitude: float  # WGS84 decimal degrees
     abs_alt_m: float  # AbsoluteAltitude, WGS84 ellipsoidal, meters
@@ -60,23 +60,45 @@ def _to_float(value: str | None) -> float | None:
         return None
 
 
-def camera_of(path: Path, image_source: str | None) -> str | None:
-    """Classify a photo as ``"tele"`` or ``"wide"``.
+def camera_of(path: Path, image_source: str | None, fl35_mm: float | None = None) -> str | None:
+    """Classify a photo as ``"tele"``, ``"wide"`` or ``"med"``.
 
-    Prefers the XMP ``ImageSource`` (``ZoomCamera`` / ``WideCamera``); falls back to the
-    DJI filename suffix (``...tele.JPG`` / ``...wide.JPG``). Returns ``None`` if neither
-    identifies the lens.
+    Trust order: DJI filename suffix (``tele``/``zoom`` = tele, ``wide``, ``med``), then
+    the 35mm-equivalent focal length (~24 wide / 70 med / 160+ tele), then the XMP
+    ``ImageSource`` — least trusted, since the M4E stamps ``ZoomCamera`` on all three of
+    its cameras and individual frames can carry a wrong ``ImageSource``.
     """
+    stem = path.stem.lower()
+    if stem.endswith("tele") or stem.endswith("zoom"):
+        return "tele"
+    if stem.endswith("wide"):
+        return "wide"
+    if stem.endswith("med"):
+        return "med"
+    if fl35_mm:
+        if fl35_mm <= 35:
+            return "wide"
+        return "med" if fl35_mm < 100 else "tele"
     if image_source == "ZoomCamera":
         return "tele"
     if image_source == "WideCamera":
         return "wide"
-    stem = path.stem.lower()
-    if stem.endswith("tele"):
-        return "tele"
-    if stem.endswith("wide"):
-        return "wide"
     return None
+
+
+def read_position(path: Path) -> tuple[float, float, float] | None:
+    """Read only ``(latitude, longitude, abs_alt_m)`` from a photo's XMP.
+
+    Cheap (no Pillow, only the XMP head scan); used to borrow the RTK position of a
+    wide frame for its tele/med siblings. Returns ``None`` if any field is missing.
+    """
+    xmp = _read_xmp_attrs(Path(path))
+    lat = _to_float(xmp.get("GpsLatitude"))
+    lon = _to_float(xmp.get("GpsLongitude"))
+    abs_alt = _to_float(xmp.get("AbsoluteAltitude"))
+    if None in (lat, lon, abs_alt):
+        return None
+    return lat, lon, abs_alt
 
 
 def read_photo_meta(path: Path) -> PhotoMeta | None:
@@ -97,10 +119,6 @@ def read_photo_meta(path: Path) -> PhotoMeta | None:
     if None in (lat, lon, abs_alt, yaw, pitch, roll):
         return None
 
-    camera = camera_of(path, xmp.get("ImageSource"))
-    if camera is None:
-        return None
-
     calib_focal = _to_float(xmp.get("CalibratedFocalLength"))
 
     with Image.open(path) as im:
@@ -110,6 +128,10 @@ def read_photo_meta(path: Path) -> PhotoMeta | None:
     fl35 = exif_ifd.get(0xA405)  # FocalLengthIn35mmFilm
     fl35_mm = float(fl35) if fl35 is not None else None
     timestamp = exif_ifd.get(0x9003)  # DateTimeOriginal
+
+    camera = camera_of(path, xmp.get("ImageSource"), fl35_mm)
+    if camera is None:
+        return None
 
     return PhotoMeta(
         path=path,

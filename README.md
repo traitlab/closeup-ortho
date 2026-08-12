@@ -12,17 +12,18 @@
 
 `closeup-ortho` performs a **simple planar projection** of DJI nadir close-up photos onto a DSM. Each photo is placed on the ground as a rectangle whose:
 
-- 📍 **position** comes from the photo's RTK GPS (WGS84 lat/lon)
+- 📍 **position** comes from the RTK GPS of the **wide** frame (WGS84 lat/lon). Tele/med frames store the *planned* waypoint coordinates instead of the actual RTK fix, so their footprints borrow the position (and altitude) of the wide frame taken at the same waypoint; the photo's own gimbal angles are kept.
 - 🧭 **heading** comes from the gimbal yaw
 - 📐 **size** comes from the camera-to-ground distance — `AbsoluteAltitude − max(DSM elevation in a small buffer)` — combined with the lens geometry (calibrated focal length for the wide camera, `FocalLengthIn35mmFilm` for the tele camera)
 
 It assumes photos are taken straight down (gimbal pitch ≈ −90°) and that the DSM uses **ellipsoidal heights**, matching the drone's `AbsoluteAltitude`. All outputs are in the **CRS of the input DSM**.
 
-Two commands:
+Three commands:
 
 | Command | What it does |
 |---|---|
 | `orthorectify` | Projects photos onto a DSM → GeoPackage footprint polygons + optional COG GeoTIFFs |
+| `batch` | Runs `orthorectify` for a list of missions (each with its own DSM) → one combined GeoPackage |
 | `labels` | Reprojects Labelbox bounding-box annotations to ground coordinates, linked to footprints |
 
 ### Example output in QGIS
@@ -81,7 +82,51 @@ gdf = orthorectify_folder(
 )
 ```
 
-### 2 — Project Labelbox annotations
+### 2 — Batch: several missions into one GeoPackage
+
+Process a list of close-up missions, each against its own DSM, and write all footprints
+to a single `footprints` layer. The link between a close-up (`wpt`) mission and the
+photogrammetry mission whose DSM to use is made **manually**, in a small text file of
+`closeup_mission,photogrammetry_mission` pairs (one per line, `#` comments allowed):
+
+```
+# missions.txt
+20260127_enearehab1_wpt169_m3e,20260225_enearehab1_10m169_m3e
+20260129_enearehab1_wpt170_m3e,20260225_enearehab1_10m169_m3e
+```
+
+```bash
+closeup-ortho batch \
+  --missions missions.txt \
+  --out      out/footprints.gpkg
+```
+
+Photos are found at `<photos-root>/<yyyy>/<closeup_mission>/` and the DSM at
+`<dsm-root>/<yyyy>/<pg_mission>/<pg_mission>_dsm.cog.tif` (falling back to `_dsm.tif`),
+with the year taken from the mission name. Every pair is resolved before any processing
+starts, so a typo fails immediately.
+
+| Option | Default | Description |
+|---|---|---|
+| `--photos-root` | `/mnt/nfs/lefodata/data/drone_missions` | Root of the drone-mission photo tree |
+| `--dsm-root` | `/mnt/nfs/conrad/labolaliberte_data/metashape` | Root of the Metashape product tree |
+| `--lenses`, `--geotiffs`, `--buffer-radius`, `--no-recursive` | | Same as `orthorectify`; GeoTIFFs go under `<dir>/<closeup_mission>/` |
+
+The combined layer has the same columns as `footprints` plus `mission`,
+`photogrammetry_mission`, and `dsm`. All missions must share the DSM CRS (same UTM
+zone) — the label reprojection relies on meter-based footprint attributes, so the tool
+refuses to mix CRSs in one layer rather than silently reproject.
+
+```python
+from closeup_ortho import orthorectify_missions, read_mission_pairs
+
+gdf = orthorectify_missions(
+    read_mission_pairs("missions.txt"),
+    out_gpkg="out/footprints.gpkg",
+)
+```
+
+### 3 — Project Labelbox annotations
 
 ```bash
 closeup-ortho labels \
@@ -113,9 +158,11 @@ The output layer contains one polygon per bounding box. Join it back to footprin
 | `path` | Full path to the photo |
 | `filename` | Filename with extension |
 | `directory` | Parent directory of the photo |
-| `camera` | `tele` or `wide` |
-| `longitude`, `latitude` | Camera position, WGS84 |
-| `abs_alt_m` | AbsoluteAltitude (ellipsoidal), meters |
+| `camera` | `tele`, `wide` or `med` (`med` = middle camera of the DJI M4E) |
+| `longitude`, `latitude` | Camera position, WGS84 (from the paired wide frame for tele/med) |
+| `abs_alt_m` | AbsoluteAltitude (ellipsoidal), meters (from the paired wide frame for tele/med) |
+| `position_source` | `wide` (borrowed from the paired wide frame) or `self` (photo's own tags — no wide sibling found, or the wide nav record was implausible) |
+| `position_from` | Filename of the wide frame the position came from (empty for wide photos) |
 | `dist_m` | Camera-to-ground distance used for projection, meters |
 | `gsd_m` | Ground sample distance, meters/pixel |
 | `footprint_w_m`, `footprint_h_m` | Footprint dimensions on the ground, meters |
