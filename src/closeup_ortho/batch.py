@@ -91,6 +91,7 @@ def orthorectify_missions(
     geotiff_dir=None,
     buffer_radius_m: float | None = None,
     recursive: bool = True,
+    geotiff_compression: str = "jpeg",
 ) -> gpd.GeoDataFrame:
     """Project every mission in ``pairs`` and write one combined footprints layer.
 
@@ -103,7 +104,7 @@ def orthorectify_missions(
         Output GeoPackage; all footprints go to a single ``footprints`` layer.
     photos_root, dsm_root : path
         Roots of the drone-mission photo tree and the Metashape product tree.
-    lenses, write_geotiffs, geotiff_dir, buffer_radius_m, recursive
+    lenses, write_geotiffs, geotiff_dir, buffer_radius_m, recursive, geotiff_compression
         Same as :func:`closeup_ortho.orthorectify.orthorectify_folder`. GeoTIFFs are
         written under ``geotiff_dir/<closeup_mission>/``.
 
@@ -135,6 +136,7 @@ def orthorectify_missions(
             geotiff_dir=Path(geotiff_dir) / mission if write_geotiffs else None,
             buffer_radius_m=buffer_radius_m,
             recursive=recursive,
+            geotiff_compression=geotiff_compression,
         )
         if not records:
             log.warning("%s: no photos projected; mission left out of the output.", mission)

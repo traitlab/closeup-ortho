@@ -13,7 +13,7 @@ from closeup_ortho.batch import (
     read_mission_pairs,
 )
 from closeup_ortho.labelbox import project_labels
-from closeup_ortho.orthorectify import orthorectify_folder
+from closeup_ortho.orthorectify import GEOTIFF_COMPRESSION, orthorectify_folder
 
 
 def _parse_lenses(value: str) -> set[str]:
@@ -33,6 +33,7 @@ def _cmd_orthorectify(args: argparse.Namespace) -> int:
         geotiff_dir=args.geotiffs,
         buffer_radius_m=args.buffer_radius,
         recursive=not args.no_recursive,
+        geotiff_compression=args.geotiff_compression,
     )
     print(f"Wrote {len(gdf)} footprints to {args.out} (CRS: {gdf.crs})")
     return 0
@@ -50,6 +51,7 @@ def _cmd_batch(args: argparse.Namespace) -> int:
         geotiff_dir=args.geotiffs,
         buffer_radius_m=args.buffer_radius,
         recursive=not args.no_recursive,
+        geotiff_compression=args.geotiff_compression,
     )
     n_missions = gdf["mission"].nunique()
     print(f"Wrote {len(gdf)} footprints from {n_missions} mission(s) to {args.out} (CRS: {gdf.crs})")
@@ -88,6 +90,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Lenses to process: 'tele' (default), 'wide', 'med', comma-combos like 'tele,wide', or 'all'.",
     )
     p_ortho.add_argument("--geotiffs", default=None, help="Also write GeoTIFFs to this folder.")
+    p_ortho.add_argument(
+        "--geotiff-compression",
+        choices=sorted(GEOTIFF_COMPRESSION),
+        default="jpeg",
+        help="GeoTIFF compression: 'jpeg' (default, quality 90) or 'deflate' "
+             "(lossless, ~6x larger).",
+    )
     p_ortho.add_argument(
         "--buffer-radius",
         type=float,
@@ -128,6 +137,13 @@ def main(argv: list[str] | None = None) -> int:
     p_batch.add_argument(
         "--geotiffs", default=None,
         help="Also write GeoTIFFs, under <this folder>/<closeup_mission>/.",
+    )
+    p_batch.add_argument(
+        "--geotiff-compression",
+        choices=sorted(GEOTIFF_COMPRESSION),
+        default="jpeg",
+        help="GeoTIFF compression: 'jpeg' (default, quality 90) or 'deflate' "
+             "(lossless, ~6x larger).",
     )
     p_batch.add_argument(
         "--buffer-radius",

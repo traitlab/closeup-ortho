@@ -13,6 +13,7 @@ the paired wide frame's position (see :func:`_wide_sibling`).
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -42,6 +43,14 @@ _BUFFER_MAX_DIAM_M = 1.0
 # frames carry an AbsoluteAltitude that is off by ~18 m (non-ellipsoidal reference)
 # even with a fixed RTK flag.
 _WIDE_ALT_TOL_M = 2.0
+
+# GeoTIFF compression profiles. The source photos are already JPEGs, so lossless DEFLATE
+# stores their decoded pixels at ~6x the size of JPEG q90, for no visible difference
+# (mean |diff| < 1/255). DEFLATE + horizontal predictor is kept for exact-pixel needs.
+GEOTIFF_COMPRESSION = {
+    "jpeg": {"compress": "JPEG", "quality": 90},
+    "deflate": {"compress": "DEFLATE", "predictor": 2},
+}
 
 
 def _iter_photos(photo_dir: Path, recursive: bool):
@@ -110,6 +119,23 @@ def _wide_sibling(path: Path, wide_index: dict[Path, list[tuple[Path, str]]]) ->
         return int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
 
     return min(candidates, key=lambda p: abs(seq_of(p) - seq_of(path)))
+
+
+def _unflip_gimbal(meta: PhotoMeta) -> PhotoMeta:
+    """Rewrite a roll-flipped nadir gimbal attitude into its roll ~ 0 equivalent.
+
+    The M4E records wide frames as ``pitch=-90, roll=180, yaw=Y+180`` where its tele/med
+    frames of the same capture read ``pitch=-90, roll=0, yaw=Y``: at nadir a 180-degree
+    roll is the same orientation as a 180-degree yaw. Normalising keeps the nadir gate
+    from rejecting these frames and gives the footprint the right heading.
+    """
+    if abs(abs(meta.roll) - 180.0) > _NADIR_SKIP_DEG:
+        return meta
+    return replace(
+        meta,
+        roll=meta.roll - math.copysign(180.0, meta.roll),
+        yaw=(meta.yaw + 360.0) % 360.0 - 180.0,
+    )
 
 
 def _auto_buffer_radius(footprint_w_m: float, footprint_h_m: float) -> float:
@@ -195,8 +221,11 @@ def _project_one(meta: PhotoMeta, dsm: DSM, buffer_radius_m: float | None) -> di
     }
 
 
-def _write_geotiff(meta: PhotoMeta, x0: float, y0: float, gsd_m: float, crs, out_path: Path) -> None:
-    """Write the photo as a georeferenced (rotated) GeoTIFF in the DSM CRS."""
+def _write_geotiff(
+    meta: PhotoMeta, x0: float, y0: float, gsd_m: float, crs, out_path: Path,
+    compression: str = "jpeg",
+) -> None:
+    """Write the photo as a georeferenced (rotated) COG GeoTIFF in the DSM CRS."""
     with Image.open(meta.path) as im:
         rgb = np.asarray(im.convert("RGB"))  # (H, W, 3)
     bands = np.transpose(rgb, (2, 0, 1))  # (3, H, W)
@@ -209,8 +238,8 @@ def _write_geotiff(meta: PhotoMeta, x0: float, y0: float, gsd_m: float, crs, out
         dtype="uint8",
         crs=crs,
         transform=transform,
-        compress="DEFLATE",
         BIGTIFF="IF_SAFER",
+        **GEOTIFF_COMPRESSION[compression],
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **profile) as dst:
@@ -225,6 +254,7 @@ def project_folder(
     geotiff_dir=None,
     buffer_radius_m: float | None = None,
     recursive: bool = True,
+    geotiff_compression: str = "jpeg",
 ):
     """Project one folder of photos onto one DSM, without writing a GeoPackage.
 
@@ -239,6 +269,11 @@ def project_folder(
         raise ValueError(f"Invalid lenses {bad}; choose from {VALID_LENSES}.")
     if write_geotiffs and geotiff_dir is None:
         raise ValueError("geotiff_dir is required when write_geotiffs is True.")
+    if geotiff_compression not in GEOTIFF_COMPRESSION:
+        raise ValueError(
+            f"Invalid geotiff_compression {geotiff_compression!r}; "
+            f"choose from {sorted(GEOTIFF_COMPRESSION)}."
+        )
     geotiff_dir = Path(geotiff_dir) if geotiff_dir else None
 
     n_seen = n_processed = n_skipped = 0
@@ -261,6 +296,7 @@ def project_folder(
                 continue
             if meta.camera not in lenses:
                 continue
+            meta = _unflip_gimbal(meta)
 
             # Tele/med frames record the *planned* waypoint position, not the drone's
             # actual RTK fix; only the wide frame carries the RTK position. Borrow
@@ -304,7 +340,10 @@ def project_folder(
 
             if write_geotiffs:
                 out_tif = geotiff_dir / (path.stem + ".tif")
-                _write_geotiff(meta, result["x0"], result["y0"], result["gsd_m"], dsm.crs, out_tif)
+                _write_geotiff(
+                    meta, result["x0"], result["y0"], result["gsd_m"], dsm.crs, out_tif,
+                    compression=geotiff_compression,
+                )
 
         crs = dsm.crs
 
@@ -322,6 +361,7 @@ def orthorectify_folder(
     geotiff_dir=None,
     buffer_radius_m: float | None = None,
     recursive: bool = True,
+    geotiff_compression: str = "jpeg",
 ) -> gpd.GeoDataFrame:
     """Planar-project close-up photos in ``photo_dir`` onto ``dsm_path``.
 
@@ -344,6 +384,9 @@ def orthorectify_folder(
         Override the auto-computed DSM sampling buffer radius (meters).
     recursive : bool
         Recurse into subfolders when scanning for photos.
+    geotiff_compression : str
+        ``"jpeg"`` (default, JPEG quality 90) or ``"deflate"`` (lossless, with
+        horizontal predictor; ~6x larger).
 
     Returns
     -------
@@ -359,6 +402,7 @@ def orthorectify_folder(
         geotiff_dir=geotiff_dir,
         buffer_radius_m=buffer_radius_m,
         recursive=recursive,
+        geotiff_compression=geotiff_compression,
     )
 
     if not records:

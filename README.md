@@ -66,6 +66,7 @@ closeup-ortho orthorectify \
 |---|---|---|
 | `--lenses` | `tele` | Which lenses to process: `tele`, `wide`, `tele,wide`, or `all` |
 | `--geotiffs DIR` | — | Also write projected COG GeoTIFFs to this folder |
+| `--geotiff-compression` | `jpeg` | `jpeg` (quality 90) or `deflate` (lossless, with predictor; ~6× larger for no visible gain, only useful for pixel-level comparisons) |
 | `--buffer-radius M` | auto | DSM sampling buffer radius in meters (default: ~50–75 cm) |
 | `--no-recursive` | — | Scan only the top folder, not subfolders |
 
@@ -110,7 +111,7 @@ starts, so a typo fails immediately.
 |---|---|---|
 | `--photos-root` | `/mnt/nfs/lefodata/data/drone_missions` | Root of the drone-mission photo tree |
 | `--dsm-root` | `/mnt/nfs/conrad/labolaliberte_data/metashape` | Root of the Metashape product tree |
-| `--lenses`, `--geotiffs`, `--buffer-radius`, `--no-recursive` | | Same as `orthorectify`; GeoTIFFs go under `<dir>/<closeup_mission>/` |
+| `--lenses`, `--geotiffs`, `--geotiff-compression`, `--buffer-radius`, `--no-recursive` | | Same as `orthorectify`; GeoTIFFs go under `<dir>/<closeup_mission>/` |
 
 The combined layer has the same columns as `footprints` plus `mission`,
 `photogrammetry_mission`, and `dsm`. All missions must share the DSM CRS (same UTM
